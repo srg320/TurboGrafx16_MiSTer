@@ -26,10 +26,10 @@ entity huc6260 is
 		RVBL		: in std_logic;
 		DCC		: out std_logic_vector(1 downto 0);
 		
-		GRID_EN	: in std_logic;
+		GRID_EN	: in std_logic_vector(1 downto 0);
 		BORDER_EN: in std_logic;
 		BORDER	: in std_logic;
-		GRID		: in std_logic;
+		GRID		: in std_logic_vector(1 downto 0);
 
 		-- NTSC/RGB Video Output
 		R			: out std_logic_vector(2 downto 0);
@@ -60,7 +60,6 @@ signal CR		: std_logic_vector(7 downto 0);
 
 -- VCE Registers
 signal DOTCLOCK	: std_logic_vector(1 downto 0);
-signal DOTCLOCK_FS: std_logic_vector(1 downto 0);
 
 -- CPU Color RAM Interface
 signal RAM_A	: std_logic_vector(8 downto 0);
@@ -75,6 +74,7 @@ constant LEFT_BL_CLOCKS	: integer := 456;
 constant DISP_CLOCKS	   : integer := 2160;
 constant LINE_CLOCKS	   : integer := 2730;
 constant HS_CLOCKS		: integer := 192;
+constant HS_OFF			: integer := 46;
 
 constant TOTAL_LINES		: integer := 263;  -- 525
 constant VS_LINES			: integer := 3; 	 -- pcetech.txt
@@ -90,13 +90,15 @@ signal HBL_FF, HBL_FF2	: std_logic;
 signal VBL_FF, VBL_FF2	: std_logic;
 
 -- Clock generation
-signal CLKEN_CNT	: std_logic_vector(3 downto 0);
-signal CLKEN_FS_CNT: std_logic_vector(3 downto 0);
+signal CLKEN_CNT	: std_logic_vector(2 downto 0);
+signal CLKEN_FS_CNT: std_logic_vector(2 downto 0);
 signal CLKEN_FF	: std_logic;
+signal MULTIRES_FF : std_logic;
+signal MULTIRES   : std_logic;
 
 begin
 
-TOP_BL_LINES <= TOP_BL_LINES_E when RVBL = '1' else TOP_BL_LINES_E+6;
+TOP_BL_LINES <= TOP_BL_LINES_E when RVBL = '1' else TOP_BL_LINES_E+4;
 DISP_LINES   <= DISP_LINES_E   when RVBL = '1' else DISP_LINES_E-11;
 
 -- Color RAM
@@ -197,13 +199,13 @@ begin
 
 		CLKEN_FF <= '0';
 		CLKEN_CNT <= CLKEN_CNT + 1;
-		if DOTCLOCK = "00" and CLKEN_CNT = "0111" and H_CNT < LINE_CLOCKS-2-1 then
+		if DOTCLOCK = "00" and CLKEN_CNT = "111" and H_CNT < LINE_CLOCKS-2-1 then
 			CLKEN_CNT <= (others => '0');
 			CLKEN_FF <= '1';
-		elsif DOTCLOCK = "01" and CLKEN_CNT = "0101" then
+		elsif DOTCLOCK = "01" and CLKEN_CNT = "101" then
 			CLKEN_CNT <= (others => '0');
 			CLKEN_FF <= '1';				
-		elsif DOTCLOCK(1) = '1' and CLKEN_CNT = "0011" and H_CNT < LINE_CLOCKS-2-1 then
+		elsif DOTCLOCK(1) = '1' and CLKEN_CNT = "011" and H_CNT < LINE_CLOCKS-2-1 then
 			CLKEN_CNT <= (others => '0');
 			CLKEN_FF <= '1';				
 		end if;
@@ -219,6 +221,15 @@ begin
 			-- Reload registers
 			BW <= CR(7);
 			DOTCLOCK <= CR(1 downto 0);
+
+			if V_CNT >= TOP_BL_LINES and V_CNT < TOP_BL_LINES + DISP_LINES and DOTCLOCK /= CR(1 downto 0) then 
+				MULTIRES_FF <= '1';
+			end if;
+				
+			if V_CNT = TOP_BL_LINES + DISP_LINES then
+				MULTIRES <= MULTIRES_FF;
+				MULTIRES_FF <= '0';
+			end if;
 		end if;
 	end if;
 end process;
@@ -228,13 +239,13 @@ begin
 	if rising_edge( CLK ) then
 		CLKEN_FS <= '0';
 		CLKEN_FS_CNT <= CLKEN_FS_CNT + 1;
-		if DOTCLOCK_FS = "00" and CLKEN_FS_CNT = "0111" and H_CNT < LINE_CLOCKS-2-1 then
-			CLKEN_FS_CNT <= (others => '0');
-			CLKEN_FS <= '1';
-		elsif DOTCLOCK_FS = "01" and CLKEN_FS_CNT = "0101" then
+		if (MULTIRES = '1' or DOTCLOCK(1) = '1') and CLKEN_FS_CNT = "011" and H_CNT < LINE_CLOCKS-2-1 then
 			CLKEN_FS_CNT <= (others => '0');
 			CLKEN_FS <= '1';				
-		elsif DOTCLOCK_FS(1) = '1' and CLKEN_FS_CNT = "0011" and H_CNT < LINE_CLOCKS-2-1 then
+		elsif DOTCLOCK = "00" and CLKEN_FS_CNT = "111" and H_CNT < LINE_CLOCKS-2-1 then
+			CLKEN_FS_CNT <= (others => '0');
+			CLKEN_FS <= '1';
+		elsif DOTCLOCK = "01" and CLKEN_FS_CNT = "101" then
 			CLKEN_FS_CNT <= (others => '0');
 			CLKEN_FS <= '1';				
 		end if;
@@ -243,10 +254,6 @@ begin
 			 CLKEN_FS_CNT <= (others => '0');
 			 CLKEN_FS <= '1';
 		end if;
-
-		if H_CNT = LEFT_BL_CLOCKS and V_CNT = TOP_BL_LINES then
-			DOTCLOCK_FS <= CR(1 downto 0);
-		end if;
 	end if;
 end process;
 
@@ -254,10 +261,10 @@ end process;
 process( CLK )
 begin
 	if rising_edge( CLK ) then
-		if H_CNT = 0             then HS_N <= '0'; end if;
-		if H_CNT = HS_CLOCKS     then HS_N <= '1'; end if;
-		if V_CNT = 0             then VS_N <= '0'; end if;
-		if V_CNT = VS_LINES      then VS_N <= '1'; end if;
+		if H_CNT = HS_OFF             then HS_N <= '0'; end if;
+		if H_CNT = HS_OFF + HS_CLOCKS then HS_N <= '1'; end if;
+		if V_CNT = 0                  then VS_N <= '0'; end if;
+		if V_CNT = VS_LINES           then VS_N <= '1'; end if;
 		
 		HS_F <= '0';
 		HS_R <= '0';
@@ -298,7 +305,7 @@ begin
 				G <= (others => '0');
 				R <= (others => '0');
 				B <= (others => '0');
-			elsif GRID = '1' and GRID_EN = '1' then
+			elsif (GRID(0) = '1' and GRID_EN(0) = '1') or (GRID(1) = '1' and GRID_EN(1) = '1') then
 				G <= (others => '1');
 				R <= (others => '1');
 				B <= (others => '1');

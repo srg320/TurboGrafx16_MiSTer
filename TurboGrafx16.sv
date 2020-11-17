@@ -39,8 +39,8 @@ module emu
 	output        CE_PIXEL,
 
 	//Video aspect ratio for HDMI. Most retro systems have ratio 4:3.
-	output  [7:0] VIDEO_ARX,
-	output  [7:0] VIDEO_ARY,
+	output [11:0] VIDEO_ARX,
+	output [11:0] VIDEO_ARY,
 
 	output  [7:0] VGA_R,
 	output  [7:0] VGA_G,
@@ -50,6 +50,7 @@ module emu
 	output        VGA_DE,    // = ~(VBlank | HBlank)
 	output        VGA_F1,
 	output [1:0]  VGA_SL,
+	output        VGA_SCALER, // Force VGA scaler
 
 	output        LED_USER,  // 1 - ON, 0 - OFF.
 
@@ -64,9 +65,10 @@ module emu
 	// b[0]: osd button
 	output  [1:0] BUTTONS,
 
+	input         CLK_AUDIO, // 24.576 MHz
 	output [15:0] AUDIO_L,
 	output [15:0] AUDIO_R,
-	output        AUDIO_S, // 1 - signed audio samples, 0 - unsigned
+	output        AUDIO_S,   // 1 - signed audio samples, 0 - unsigned
 	output  [1:0] AUDIO_MIX, // 0 - no mix, 1 - 25%, 2 - 50%, 3 - 100% (mono)
 
 	//ADC
@@ -127,19 +129,12 @@ module emu
 
 
 //`define DEBUG_BUILD
-
+//`define DEBUG_PALETTES
 
 `ifdef DEBUG_BUILD
 	localparam LITE = 1;
 `else
-	//`define USE_SP64
 	localparam LITE = 0;
-`endif
-
-`ifdef USE_SP64
-	localparam SP64 = 1;
-`else
-	localparam SP64 = 0;
 `endif
 
 assign ADC_BUS  = 'Z;
@@ -151,15 +146,18 @@ assign LED_USER  = cart_download | bk_state | bk_pending;
 assign LED_DISK  = 0;
 assign LED_POWER = 0;
 assign BUTTONS   = osd_btn;
+assign VGA_SCALER= 0;
 
-assign VIDEO_ARX = status[1] ? 8'd16 : overscan ? 8'd4 : 8'd47;
-assign VIDEO_ARY = status[1] ? 8'd9  : overscan ? 8'd3 : 8'd37;
+wire [1:0] ar = status[25:24];
+
+assign VIDEO_ARX = (!ar) ? (overscan ? 8'd4 : 8'd47) : (ar - 1'd1);
+assign VIDEO_ARY = (!ar) ? (overscan ? 8'd3 : 8'd37) : 12'd0;
 
 // Status Bit Map:
 // 0         1         2         3
 // 01234567890123456789012345678901
 // 0123456789ABCDEFGHIJKLMNOPQRSTUV
-// XXXXXXXXXXXXXXXXXXXXXX X
+// XXXXXXXXXXXXXXXXXXXXXX XXXXXX
 
 `include "build_id.v"
 parameter CONF_STR = {
@@ -169,10 +167,14 @@ parameter CONF_STR = {
 	"FS1,SGX,Load SuperGrafx;",
 `endif
 	"-;",
+`ifdef DEBUG_PALETTES
+	"F3,TGP,Load Palette;",
+	"-;",
+`endif
 	"S0,CUE,Insert CD;",
 	"-;",
 	"C,Cheats;",
-	"H1OO,Cheats enabled,ON,OFF;",
+	"H1O5,Cheats enabled,ON,OFF;",
 	"-;",
 	"D0RG,Load Backup RAM;",
 	"D0R7,Save Backup RAM;",
@@ -180,12 +182,13 @@ parameter CONF_STR = {
 	"-;",
 	"P1,Audio & Video;",
 	"P1-;",
-	"P1O1,Aspect ratio,4:3,16:9;",
+	"P1OOP,Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
 	"P1O8A,Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
 	"P1-;",
+	"P1OS,Colors,Original,Raw RGB;",
 	"P1OH,Overscan,Hidden,Visible;",
 	"P1OF,Border Color,Original,Black;",
-	"H6P1OB,Sprites per line,Normal,Extra;",
+	"P1OB,Sprites per line,Normal,Extra;",
 	"P1-;",
 	"P1OK,CD Audio Boost,No,2x;",
 	"P1OIJ,Master Audio Boost,No,2x,4x;",
@@ -200,7 +203,7 @@ parameter CONF_STR = {
 `endif
 	"P2-;",
 	"P2OE,Arcade Card,Disabled,Enabled;",
-	"P2OP,CD Seek,Normal,Fast;",
+	"P2O1,CD Seek,Normal,Fast;",
 	"P2-;",
 	"P2OD,USER I/O,Off,SNAC;",
 	"H5P2OL,MB128,Disabled,Enabled;",
@@ -209,7 +212,7 @@ parameter CONF_STR = {
 	"-;",
 	"H5O2,Turbo Tap,Disabled,Enabled;",
 	"H5O4,Controller,2 Buttons,6 Buttons;",
-	"H5O5,Mouse,No,Yes;",
+	"H5OQR,Special,None,Mouse,Pachinko;",
 	"H5-;",
 	"R0,Reset;",
 	"J1,Button I,Button II,Select,Run,Button III,Button IV,Button V,Button VI;",
@@ -259,6 +262,9 @@ wire [31:0] status;
 wire  [1:0] buttons;
 
 wire [11:0] joy_0, joy_1, joy_2, joy_3, joy_4;
+wire [15:0] joy_a;
+wire  [7:0] pd_0;
+
 wire        ioctl_download;
 wire  [7:0] ioctl_index;
 wire        ioctl_wr;
@@ -294,7 +300,7 @@ hps_io #(.STRLEN($size(CONF_STR)>>3), .WIDE(1)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask({!SP64, snac, 1'd1, use_sdr, ~use_sdr, ~gg_avail,~bk_ena}),
+	.status_menumask({snac, 1'd1, use_sdr, ~use_sdr, ~gg_avail,~bk_ena}),
 	.forced_scandoubler(forced_scandoubler),
 
 	.sdram_sz(sdram_sz),
@@ -326,6 +332,8 @@ hps_io #(.STRLEN($size(CONF_STR)>>3), .WIDE(1)) hps_io
 	.joystick_2(joy_2),
 	.joystick_3(joy_3),
 	.joystick_4(joy_4),
+	.joystick_analog_0(joy_a),
+	.paddle_0(pd_0),
 
 	.ps2_key(ps2_key),
 	.ps2_mouse(ps2_mouse),
@@ -334,6 +342,10 @@ hps_io #(.STRLEN($size(CONF_STR)>>3), .WIDE(1)) hps_io
 );
 
 wire reset = (RESET | status[0] | buttons[1] | bk_loading);
+
+`ifdef DEBUG_PALETTES
+wire palette_download = ioctl_download & (ioctl_index[5:0] == 6'h03 || (ioctl_index[7:6] == 1 && ~|ioctl_index));
+`endif
 
 wire code_index      = &ioctl_index;
 wire code_download   = ioctl_download & code_index;
@@ -350,6 +362,7 @@ reg         cd_dataout_req;
 wire [79:0] cd_dataout;
 wire        cd_dataout_send;
 wire        cd_reset_req;
+reg         cd_region;
 
 wire [21:0] cd_ram_a;
 wire        cd_ram_rd, cd_ram_wr;
@@ -362,11 +375,12 @@ wire [15:0] cdda_sl, cdda_sr, adpcm_s, psg_sl, psg_sr;
 pce_top #(LITE) pce_top
 (
 	.RESET(reset|cart_download),
+	.COLD_RESET(cart_download),
 
 	.CLK(clk_sys),
 
 	.ROM_RD(rom_rd),
-	.ROM_RDY(rom_sdrdy & rom_ddrdy),
+	.ROM_RDY(rom_sdrdy & rom_ddrdy & ram_ddrdy),
 	.ROM_A(rom_rdaddr),
 	.ROM_DO(use_sdr ? rom_sdata : rom_ddata),
 	.ROM_SZ(romwr_a[23:16]),
@@ -378,12 +392,12 @@ pce_top #(LITE) pce_top
 	.BRM_DI(bram_data),
 	.BRM_WE(bram_wr),
 
-	.GG_EN(status[24]),
+	.GG_EN(status[5]),
 	.GG_CODE(gg_code),
 	.GG_RESET((cart_download | code_download) & ioctl_wr & !ioctl_addr),
 	.GG_AVAIL(gg_avail),
 
-	.SP64(status[11] && SP64),
+	.SP64(status[11]),
 	.SGX(sgx && !LITE),
 
 	.JOY_OUT(joy_out),
@@ -409,6 +423,7 @@ pce_top #(LITE) pce_top
 	.CD_DOUT(cd_dataout),
 	.CD_DOUT_SEND(cd_dataout_send),
 
+	.CD_REGION(cd_region),
 	.CD_RESET(cd_reset_req),
 
 	.CD_DATA(!cd_dat_byte ? cd_dat[7:0] : cd_dat[15:8]),
@@ -471,6 +486,7 @@ always @(posedge clk_sys) begin
 	if (reset || cart_download) begin
 		comm_cnt <= 0;
 		stat_cnt <= 0;
+		cd_region <= 0;
 	end
 	else begin
 		if (cd_out[112] != cd_out112_last) begin
@@ -478,8 +494,8 @@ always @(posedge clk_sys) begin
 
 			cd_stat <= cd_out[15:0];
 			cd_stat_rec <= ~cd_out[16];
-
 			cd_dataout_req <= cd_out[16];
+			cd_region <= cd_out[17];
 
 			stat_cnt <= stat_cnt + 8'd1;
 		end
@@ -490,7 +506,7 @@ always @(posedge clk_sys) begin
 		cd_reset_req_old <= cd_reset_req;
 		if (cd_comm_send && !cd_comm_send_old) begin
 			cd_in[95:0] <= cd_comm;
-			cd_in[111:96] <= {status[25],15'd0};
+			cd_in[111:96] <= {status[1],15'd0};
 			cd_in[112] <= ~cd_in[112];
 
 			comm_cnt <= comm_cnt + 8'd1;
@@ -575,15 +591,63 @@ always @(posedge CLK_VIDEO) begin
 	ce_pix <= ~old_ce & ce_vid;
 end
 
+`ifdef DEBUG_PALETTES
+logic [23:0] read_color;
+logic [8:0] ioctl_addr_1;
+logic [1:0] pal_cnt;
+
+always @(posedge clk_sys) begin
+	if (ioctl_wr & palette_download) begin
+		pal_cnt <= pal_cnt + 2'd1;
+		if (pal_cnt == 2) begin
+			pal_cnt <= 0;
+			ioctl_addr_1 <= ioctl_addr_1 + 1'd1;
+		end
+	end
+
+	if (palette_download)
+		read_color[{2'd2 - pal_cnt, 3'b000}+:8] <= ioctl_dout[7:0];
+	else begin
+		pal_cnt <= 0;
+		ioctl_addr_1 <= 0;
+	end
+end
+`endif
+
+logic [23:0] pal_color;
+
+dpram #(
+	.addr_width(9),
+	.data_width(24),
+	.mem_init_file("palette.mif")
+) palette_ram (
+	.clock(CLK_VIDEO),
+
+	.address_a({g,r,b}),
+	.q_a(pal_color)
+
+`ifdef DEBUG_PALETTES
+	,
+	.address_b(ioctl_addr_1),
+	.enable_b(palette_download),
+	.data_b({read_color[23:8], ioctl_dout[7:0]}),
+	.wren_b(ioctl_wr)
+`endif
+);
+
+logic [7:0] r1, b1, g1;
+
+assign {r1, g1, b1} = status[28] ? {{r,r,r[2:1]}, {g,g,g[2:1]}, {b,b,b[2:1]}} : pal_color;
+
 color_mix color_mix
 (
 	.clk_vid(CLK_VIDEO),
 	.ce_pix(ce_pix),
 	.mix(bw ? 3'd5 : 0),
 
-	.R_in({r,r,r[2:1]}),
-	.G_in({g,g,g[2:1]}),
-	.B_in({b,b,b[2:1]}),
+	.R_in(r1),
+	.G_in(g1),
+	.B_in(b1),
 	.HSync_in(hs),
 	.VSync_in(vs),
 	.HBlank_in(hbl),
@@ -653,23 +717,68 @@ endfunction
 
 reg [17:0] audio_l, audio_r;
 reg [15:0] cmp_l, cmp_r;
+
+logic [4:0] div_audio;
+logic adpcm_ce, psg_ce;
+
+logic [15:0] adpcm_filt, psg_l_filt, psg_r_filt;
+
+always @(posedge clk_sys) begin
+	// 2684650 and 1342323
+	div_audio <= div_audio + 1'd1;
+
+	adpcm_ce <= &div_audio[4:0];
+	psg_ce <= &div_audio[3:0];
+end
+
+IIR_filter #(
+	.coeff_x   (0.00200339512841342642),
+	.coeff_x0  (2),
+	.coeff_x1  (1),
+	.coeff_x2  (0),
+	.coeff_y0  (-1.95511712863912712201),
+	.coeff_y1  (0.95667938324280066276),
+	.coeff_y2  (0),
+	.stereo    (1)
+) psg_filter (
+	.clk       (clk_sys),
+	.ce        (psg_ce), // (1342323 * 2)
+	.sample_ce (1),
+	.input_l   (psg_sl),
+	.input_r   (psg_sr),
+	.output_l  (psg_l_filt),
+	.output_r  (psg_r_filt)
+);
+
+IIR_filter #(
+	.coeff_x   (0.00002488367092441635),
+	.coeff_x0  (3),
+	.coeff_x1  (3),
+	.coeff_x2  (1),
+	.coeff_y0  (-2.94383188882174362533),
+	.coeff_y1  (2.88923013608993572987),
+	.coeff_y2  (-0.94537670406128904155),
+	.stereo    (0)
+) adpcm_filter (
+	.clk       (clk_sys),
+	.ce        (adpcm_ce), // 1342323
+	.sample_ce (1),
+	.input_l   (adpcm_s),
+	.output_l  (adpcm_filt)
+);
+
 always @(posedge clk_sys) begin
 	reg [17:0] pre_l, pre_r;
-	reg [15:0] psg_sl_red, psg_sr_red, adpcm_s_red;
 
-	psg_sl_red  <=  ($signed(psg_sl) >>> 1) +  ($signed(psg_sl) >>> 2) +  ($signed(psg_sl) >>> 4);
-	psg_sr_red  <=  ($signed(psg_sr) >>> 1) +  ($signed(psg_sr) >>> 2) +  ($signed(psg_sr) >>> 4);
-	adpcm_s_red <= ($signed(adpcm_s) >>> 1) + ($signed(adpcm_s) >>> 2) + ($signed(adpcm_s) >>> 3);
-
-	pre_l <= ( CDDA_EN                ? {{2{cdda_sl[15]}},         cdda_sl} : 18'd0)
+	pre_l <= ( CDDA_EN                  ? {{2{cdda_sl[15]}},         cdda_sl} : 18'd0)
 			 + ((CDDA_EN && status[20]) ? {{2{cdda_sl[15]}},         cdda_sl} : 18'd0)
-			 + ( PSG_EN                 ? {{2{psg_sl_red[15]}},   psg_sl_red} : 18'd0)
-			 + ( ADPCM_EN               ? {{2{adpcm_s_red[15]}}, adpcm_s_red} : 18'd0);
+			 + ( PSG_EN                 ? {{2{psg_l_filt[15]}},   psg_l_filt} : 18'd0)
+			 + ( ADPCM_EN               ? {{2{adpcm_filt[15]}},   adpcm_filt} : 18'd0);
 
-	pre_r <= ( CDDA_EN                ? {{2{cdda_sr[15]}},         cdda_sr} : 18'd0)
+	pre_r <= ( CDDA_EN                  ? {{2{cdda_sr[15]}},         cdda_sr} : 18'd0)
 			 + ((CDDA_EN && status[20]) ? {{2{cdda_sr[15]}},         cdda_sr} : 18'd0)
-			 + ( PSG_EN                 ? {{2{psg_sr_red[15]}},   psg_sr_red} : 18'd0)
-			 + ( ADPCM_EN               ? {{2{adpcm_s_red[15]}}, adpcm_s_red} : 18'd0);
+			 + ( PSG_EN                 ? {{2{psg_r_filt[15]}},   psg_r_filt} : 18'd0)
+			 + ( ADPCM_EN               ? {{2{adpcm_filt[15]}},   adpcm_filt} : 18'd0);
 
 	if(~status[20]) begin
 		// 3/4 + 1/4 to cover the whole range.
@@ -698,23 +807,25 @@ always @(posedge clk_ram) if(~rom_rd) use_sdr <= LITE ? ~status[6] : |sdram_sz[1
 
 wire [21:0] rom_rdaddr;
 wire  [7:0] rom_ddata, rom_sdata;
-wire        rom_rd, rom_sdrdy, rom_ddrdy;
+wire        rom_rd, rom_sdrdy, rom_ddrdy, ram_ddrdy;
 
 assign DDRAM_CLK = clk_ram;
 ddram ddram
 (
 	.*,
+	.clkref(ce_rom),
 
 	.wraddr(cart_download ? romwr_a : {3'b001,cd_ram_a}),
 	.din(cart_download ? romwr_d : {cd_ram_do,cd_ram_do}),
-	.we(cart_download ? 0 : cd_ram_wr & ce_rom),
+	.we(~cart_download & ~use_sdr & cd_ram_wr & ce_rom),
 	.we_req(rom_wr),
 	.we_ack(dd_wrack),
+	.we_rdy(ram_ddrdy),
 
 	.rdaddr(rom_rd ? {3'b000,(rom_rdaddr + (romwr_a[9] ? 22'h200 : 22'h0))} : {3'b001,cd_ram_a}),
-	.dout(rom_ddata),
-	.rd_req(~use_sdr & (rom_rd | cd_ram_rd) & ce_rom),
-	.rd_rdy(rom_ddrdy)
+	.rd(~use_sdr & (rom_rd | cd_ram_rd) & ce_rom),
+	.rd_rdy(rom_ddrdy),
+	.dout(rom_ddata)
 );
 
 sdram sdram
@@ -727,7 +838,7 @@ sdram sdram
 
 	.waddr(cart_download ? romwr_a : {3'b001,cd_ram_a}),
 	.din(cart_download ? romwr_d : {cd_ram_do,cd_ram_do}),
-	.we(cart_download ? 0 : cd_ram_wr & ce_rom),
+	.we(~cart_download & use_sdr & cd_ram_wr & ce_rom),
 	.we_req(rom_wr),
 	.we_ack(sd_wrack),
 
@@ -819,13 +930,37 @@ end
 wire [15:0] joy_data;
 always_comb begin
 	case (joy_port)
-		0: joy_data = status[5] ? {mouse_data, mouse_data} : ~{4'hF, joy_0[11:8], joy_0[1], joy_0[2], joy_0[0], joy_0[3], joy_0[7:4]};
-		1: joy_data = ~{4'hF, joy_1[11:8], joy_1[1], joy_1[2], joy_1[0], joy_1[3], joy_1[7:4]};
+		0: joy_data = status[26] ? {mouse_data, mouse_data} : ~{4'hF, joy_0[11:8], joy_0[1], joy_0[2], joy_0[0], joy_0[3], joy_0[7:4]};
+		1: joy_data = status[27] ? pachinko                 : ~{4'hF, joy_1[11:8], joy_1[1], joy_1[2], joy_1[0], joy_1[3], joy_1[7:4]};
 		2: joy_data = ~{4'hF, joy_2[11:8], joy_2[1], joy_2[2], joy_2[0], joy_2[3], joy_2[7:4]};
 		3: joy_data = ~{4'hF, joy_3[11:8], joy_3[1], joy_3[2], joy_3[0], joy_3[3], joy_3[7:4]};
 		4: joy_data = ~{4'hF, joy_4[11:8], joy_4[1], joy_4[2], joy_4[0], joy_4[3], joy_4[7:4]};
 		default: joy_data = 16'h0FFF;
 	endcase
+end
+
+reg [6:0] pachinko;
+always @(posedge clk_sys) begin
+	reg use_paddle = 0;
+	reg old_pd = 0;
+
+	old_pd <= pd_0[5];
+	if(old_pd ^ pd_0[5]) use_paddle <= 1;
+	if(reset | cart_download) use_paddle <= 0;
+
+	if(use_paddle) begin
+		// use only second half of paddle range
+		// Spring centering paddles then can simulate pachinko's spring
+
+		pachinko <= pd_0[6:0];
+		if(pd_0 < 8'h83) pachinko <= 7'h3;
+		else if(pd_0 > 8'hF4) pachinko <= 7'h74;
+	end
+	else begin
+		pachinko <= 7'd0 - joy_a[14:8];
+		if(joy_a[15:8] > 8'hFC || !joy_a[15]) pachinko <= 7'h3;
+		else if(joy_a[15:8] < 8'h8B) pachinko <= 7'h74;
+	end
 end
 
 wire [7:0] mouse_data;
@@ -881,7 +1016,7 @@ always @(posedge clk_sys) begin : input_block
 		joy_latch <= 0;
 		if (~last_gp[1]) high_buttons <= ~high_buttons && status[4];
 	end
-	else if (joy_out[0] && ~last_gp[0] && status[2]) begin
+	else if (joy_out[0] && ~last_gp[0] && (status[2] | status[27])) begin
 		joy_port <= joy_port + 3'd1;
 	end
 end
@@ -930,12 +1065,12 @@ wire  [3:0] mb128_Data;
 
 MB128 MB128
 (
-	.reset_n(~RESET),
+	.reset(reset|cart_download),
 	.clk_sys(clk_sys),
 
 	.i_Clk(mb128_ena & joy_out[1]),	// send only if MB128 enabled
 	.i_Data(joy_out[0]),
-	
+
    .o_Active(mb128_Active),	// high if MB128 asserts itself instead of joypad inputs
 	.o_Data(mb128_Data),
 
@@ -1080,7 +1215,7 @@ end
 
 reg VDC_BG_EN  = 1;
 reg VDC_SPR_EN = 1;
-reg VDC_GRID_EN = 0;
+reg [1:0] VDC_GRID_EN = 2'd0;
 reg CPU_PAUSE_EN = 0;
 reg PSG_EN  = 1;
 reg CDDA_EN = 1;
@@ -1095,13 +1230,13 @@ always @(posedge clk_sys) begin
 
 	if((ps2_key[10] != old_state) && pressed) begin
 		casex(code)
-			'h005: begin VDC_BG_EN <= ~VDC_BG_EN; end 		// F1
-			'h006: begin VDC_SPR_EN <= ~VDC_SPR_EN; end 		// F2
-			'h004: begin VDC_GRID_EN <= ~VDC_GRID_EN; end 	// F3
-			'h00C: begin PSG_EN <= ~PSG_EN; end 				// F4
-			'h003: begin CDDA_EN <= ~CDDA_EN; end 				// F5
-			'h00B: begin ADPCM_EN <= ~ADPCM_EN; end 			// F6
-			'h083: begin CPU_PAUSE_EN <= ~CPU_PAUSE_EN; end // F7
+			'h005: begin VDC_BG_EN <= ~VDC_BG_EN; end 			// F1
+			'h006: begin VDC_SPR_EN <= ~VDC_SPR_EN; end 			// F2
+			'h004: begin VDC_GRID_EN <= VDC_GRID_EN + 2'd1; end// F3
+			'h00C: begin PSG_EN <= ~PSG_EN; end 					// F4
+			'h003: begin CDDA_EN <= ~CDDA_EN; end 					// F5
+			'h00B: begin ADPCM_EN <= ~ADPCM_EN; end 				// F6
+			'h083: begin CPU_PAUSE_EN <= ~CPU_PAUSE_EN; end 	// F7
 		endcase
 	end
 end
@@ -1110,7 +1245,7 @@ end
 
 wire VDC_BG_EN  = 1;
 wire VDC_SPR_EN = 1;
-wire VDC_GRID_EN = 0;
+wire [1:0] VDC_GRID_EN = 2'd0;
 wire CPU_PAUSE_EN = 0;
 wire PSG_EN  = 1;
 wire CDDA_EN = 1;
